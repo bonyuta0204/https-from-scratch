@@ -1,4 +1,5 @@
 pub mod http1;
+pub mod http2;
 
 pub trait HttpClient {
     fn request(&self, req: Request) -> Result<Response, Error>;
