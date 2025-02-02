@@ -143,9 +143,10 @@ impl HttpClient for Http2Client {
         let root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-        let config = rustls::ClientConfig::builder()
+        let mut config = rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_no_client_auth();
+        config.alpn_protocols = vec![b"h2".to_vec()]; // HTTP/2 protocol identifier
 
         let config = Arc::new(config);
 
