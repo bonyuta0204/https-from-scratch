@@ -13,15 +13,12 @@
 //!
 //! Then, run with: `cargo run`
 use super::{Error, HttpClient, Request, Response};
-use bytes::{Bytes, BytesMut};
-use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
 // We'll use rustls for TLS and webpki-roots for trusted certificates.
-use rustls::{pki_types::TrustAnchor, ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-use webpki_roots::TLS_SERVER_ROOTS;
+use rustls::{ClientConnection, StreamOwned};
 
 const PREFACE: &str = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
