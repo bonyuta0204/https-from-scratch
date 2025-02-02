@@ -26,6 +26,22 @@ impl Request {
             body,
         }
     }
+
+    fn port(&self) -> u16 {
+        if self.url.starts_with("https://") {
+            443
+        } else {
+            80
+        }
+    }
+
+    fn host(&self) -> String {
+        if let Some(i) = self.url.find("://") {
+            self.url[i + 3..].to_string()
+        } else {
+            self.url.to_string()
+        }
+    }
 }
 
 #[derive(Debug)]

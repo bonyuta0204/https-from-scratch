@@ -5,7 +5,7 @@ use http::{Error, HttpClient, Request};
 
 fn main() -> Result<(), Error> {
     let response = Http2Client::new().request(Request::new(
-        "https://example.com".to_string(),
+        "https://www.google.com".to_string(),
         "GET".to_string(),
         vec![],
         None,
