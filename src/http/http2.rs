@@ -80,10 +80,16 @@ impl Frame {
         );
         if !self.payload.is_empty() {
             print!("{}Payload ({} bytes):", prefix, self.payload.len());
-            for b in &self.payload {
-                print!(" {:02x}", b);
+
+            if self.frame_type == 0x0 {
+                println!("ASCII decoded: {}", String::from_utf8_lossy(&self.payload));
+                println!();
+            } else {
+                for b in &self.payload {
+                    print!(" {:02x}", b);
+                }
+                println!();
             }
-            println!();
         } else {
             println!("{}(no payload)", prefix);
         }
@@ -244,7 +250,7 @@ impl HttpClient for Http2Client {
         // has a 4-bit prefix (0000) followed by the index. For index 1, that is just 0x01.
         header_block.push(0x01);
         // Now encode the header value "example.com":
-        let authority = b"example.com";
+        let authority = b"www.google.com";
         // First, a length byte (no Huffman; MSB = 0)
         header_block.push(authority.len() as u8);
         // Then the raw bytes.
