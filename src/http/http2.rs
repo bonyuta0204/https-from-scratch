@@ -150,13 +150,15 @@ impl HttpClient for Http2Client {
         let config = Arc::new(config);
 
         // The server we wish to connect to.
-        let server_addr = "www.google.com:443";
+        let server_addr = req.url.clone();
 
         println!("Connecting to {}", server_addr);
-        let sock = TcpStream::connect(server_addr).map_err(|e| Error::ConnectionFailed)?;
+        // Clone server_addr before using it in TcpStream::connect
+        let sock = TcpStream::connect(server_addr.clone()).map_err(|_e| Error::ConnectionFailed)?;
 
         // Convert the domain name to the type expected by rustls.
-        let server_name = "www.google.com".try_into().unwrap();
+        // Create a new owned string for server_name to satisfy the 'static lifetime requirement
+        let server_name = server_addr.try_into().unwrap();
         let conn = ClientConnection::new(config, server_name).unwrap();
         let mut stream = StreamOwned::new(conn, sock);
 

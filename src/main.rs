@@ -1,14 +1,20 @@
 mod http;
 
 use http::http2::Http2Client;
-use http::{HttpClient, Request};
+use http::{Error, HttpClient, Request};
 
-fn main() -> std::io::Result<()> {
-    let result = Http2Client::new().request(Request::new(
+fn main() -> Result<(), Error> {
+    let response = Http2Client::new().request(Request::new(
         "https://example.com".to_string(),
         "GET".to_string(),
         vec![],
         None,
     ));
-    Ok(())
+
+    match response {
+        Ok(_response) => Ok(()),
+        Err(e) => {
+            return Err(e);
+        }
+    }
 }
