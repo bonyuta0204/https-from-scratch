@@ -13,6 +13,7 @@
 //!
 //! Then, run with: `cargo run`
 use super::{Error, HttpClient, Request, Response};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -26,6 +27,47 @@ const PREFACE: &str = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 pub struct Http2Client {}
 
 #[derive(Debug)]
+struct HPackEncoder {}
+
+impl HPackEncoder {
+    fn encode(headers: &HashMap<String, String>) -> Vec<u8> {
+        let mut results = vec![];
+        headers.iter().for_each(|(k, v)| {
+            // Pre-defined headers from HPACK static table
+            if k == ":method" && v == "GET" {
+                results.push(0x82); // Index 2
+            } else if k == ":method" && v == "POST" {
+                results.push(0x83); // Index 3
+            } else if k == ":scheme" && v == "https" {
+                results.push(0x87); // Index 7
+            } else if k == ":scheme" && v == "http" {
+                results.push(0x86); // Index 6
+            } else if k == ":path" && v == "/" {
+                results.push(0x84); // Index 4
+            } else if k == ":authority" {
+                // Authority header with indexed name (index 1) + literal value
+                results.push(0x01); // Indexed name, index 1
+                results.push(v.len() as u8); // Length of value
+                results.extend_from_slice(v.as_bytes()); // Value bytes
+            } else if k == ":path" {
+                // Path header with indexed name (index 4) + literal value
+                results.push(0x04); // Indexed name, index 4
+                results.push(v.len() as u8); // Length of value
+                results.extend_from_slice(v.as_bytes()); // Value bytes
+            } else {
+                // Custom header with literal name and value (without indexing)
+                results.push(0x00); // Literal name, not indexed
+                results.push(k.len() as u8); // Length of name
+                results.extend_from_slice(k.as_bytes()); // Name bytes
+                results.push(v.len() as u8); // Length of value
+                results.extend_from_slice(v.as_bytes()); // Value bytes
+            }
+        });
+        results
+    }
+}
+
+#[derive(Debug)]
 struct Frame {
     length: u32,
     frame_type: u8,
@@ -33,6 +75,25 @@ struct Frame {
     stream_id: u32,
     payload: Vec<u8>,
 }
+
+// Frame type constants
+const FRAME_TYPE_DATA: u8 = 0x0;
+const FRAME_TYPE_HEADERS: u8 = 0x1;
+const FRAME_TYPE_PRIORITY: u8 = 0x2;
+const FRAME_TYPE_RST_STREAM: u8 = 0x3;
+const FRAME_TYPE_SETTINGS: u8 = 0x4;
+const FRAME_TYPE_PUSH_PROMISE: u8 = 0x5;
+const FRAME_TYPE_PING: u8 = 0x6;
+const FRAME_TYPE_GOAWAY: u8 = 0x7;
+const FRAME_TYPE_WINDOW_UPDATE: u8 = 0x8;
+const FRAME_TYPE_CONTINUATION: u8 = 0x9;
+
+// Frame flag constants
+const FLAG_END_STREAM: u8 = 0x1;
+const FLAG_END_HEADERS: u8 = 0x4;
+const FLAG_PADDED: u8 = 0x8;
+const FLAG_PRIORITY: u8 = 0x20;
+const FLAG_ACK: u8 = 0x1; // For SETTINGS
 
 impl Frame {
     /// Creates a new frame given its type, flags, stream id and payload.
@@ -44,6 +105,17 @@ impl Frame {
             flags,
             stream_id,
             payload,
+        }
+    }
+    
+    /// Create a clone of this frame
+    fn clone(&self) -> Self {
+        Self {
+            length: self.length,
+            frame_type: self.frame_type,
+            flags: self.flags,
+            stream_id: self.stream_id,
+            payload: self.payload.clone(),
         }
     }
 
@@ -81,7 +153,7 @@ impl Frame {
         if !self.payload.is_empty() {
             print!("{}Payload ({} bytes):", prefix, self.payload.len());
 
-            if self.frame_type == 0x0 {
+            if self.frame_type == 0x0 || self.frame_type == 0x7 {
                 println!("ASCII decoded: {}", String::from_utf8_lossy(&self.payload));
                 println!();
             } else {
@@ -136,9 +208,132 @@ fn read_frame(stream: &mut dyn Read) -> std::io::Result<Frame> {
         payload,
     })
 }
+/// Simple decoder for HPACK headers
+#[derive(Debug)]
+struct HPackDecoder {}
+
+impl HPackDecoder {
+    /// Decode HPACK headers from a headers frame payload
+    fn decode(payload: &[u8]) -> Vec<(String, String)> {
+        let mut headers = Vec::new();
+        let mut i = 0;
+
+        while i < payload.len() {
+            let b = payload[i];
+            i += 1;
+            
+            // Check if this is an indexed header field
+            if b & 0x80 != 0 {
+                // Indexed header field
+                let index = b & 0x7F;
+                match index {
+                    8 => headers.push((":status".to_string(), "200".to_string())),
+                    9 => headers.push((":status".to_string(), "204".to_string())),
+                    10 => headers.push((":status".to_string(), "206".to_string())),
+                    11 => headers.push((":status".to_string(), "304".to_string())),
+                    12 => headers.push((":status".to_string(), "400".to_string())),
+                    13 => headers.push((":status".to_string(), "404".to_string())),
+                    14 => headers.push((":status".to_string(), "500".to_string())),
+                    // Add other common status codes from the static table
+                    _ => headers.push(("unknown-indexed".to_string(), format!("{}", index))),
+                }
+            } else if b & 0x40 != 0 {
+                // Literal header field with incremental indexing
+                let index = b & 0x3F;
+                if index == 0 {
+                    // Read name as string literal
+                    if i >= payload.len() {
+                        break;
+                    }
+                    let name_len = payload[i] as usize;
+                    i += 1;
+                    if i + name_len > payload.len() {
+                        break;
+                    }
+                    let name = String::from_utf8_lossy(&payload[i..i+name_len]).to_string();
+                    i += name_len;
+                    
+                    // Read value
+                    if i >= payload.len() {
+                        break;
+                    }
+                    let value_len = payload[i] as usize;
+                    i += 1;
+                    if i + value_len > payload.len() {
+                        break;
+                    }
+                    let value = String::from_utf8_lossy(&payload[i..i+value_len]).to_string();
+                    i += value_len;
+                    
+                    headers.push((name, value));
+                } else {
+                    // Handle indexed name (not implemented fully)
+                    // Skip value for simplicity
+                    if i >= payload.len() {
+                        break;
+                    }
+                    let value_len = payload[i] as usize;
+                    i += 1 + value_len;
+                }
+            } else {
+                // Other literals - simplified implementation
+                // Skip this header for simplicity
+                if i >= payload.len() {
+                    break;
+                }
+                let len = payload[i] as usize;
+                i += 1 + len;
+                
+                if i >= payload.len() {
+                    break;
+                }
+                let value_len = payload[i] as usize;
+                i += 1 + value_len;
+            }
+        }
+        
+        headers
+    }
+}
+
 impl Http2Client {
     pub fn new() -> Self {
         Self {}
+    }
+    
+    /// Parse a full HTTP/2 response from frames
+    fn parse_response(&self, frames: &[Frame]) -> Result<Response, Error> {
+        let mut status = 200;
+        let mut headers = Vec::new();
+        let mut body = Vec::new();
+        
+        for frame in frames {
+            match frame.frame_type {
+                FRAME_TYPE_HEADERS => {
+                    // Parse headers using HPACK
+                    let decoded = HPackDecoder::decode(&frame.payload);
+                    for (name, value) in decoded {
+                        if name == ":status" {
+                            if let Ok(parsed_status) = value.parse::<u16>() {
+                                status = parsed_status;
+                            }
+                        } else if !name.starts_with(':') {
+                            // Only add regular headers, not pseudo-headers
+                            headers.push((name, value));
+                        }
+                    }
+                },
+                FRAME_TYPE_DATA => {
+                    // Append data frame payload to response body
+                    body.extend_from_slice(&frame.payload);
+                },
+                _ => {
+                    // Ignore other frame types
+                }
+            }
+        }
+        
+        Ok(Response::new(status, headers, body))
     }
 }
 
@@ -238,23 +433,28 @@ impl HttpClient for Http2Client {
         //         and the lower bits encode the index (here, 1).
         //         Then encode the header value as a string literal:
         //         one byte length (MSB=0, no Huffman) followed by the raw bytes.
-        let mut header_block = Vec::new();
-        // :method: GET -> static table index 2.
-        header_block.push(0x82);
-        // :scheme: https -> static table index 7.
-        header_block.push(0x87);
-        // :path: / -> static table index 4.
-        header_block.push(0x84);
-        // :authority: example.com as a literal header field without indexing.
-        // For "Literal Header Field without Indexing — Indexed Name" the first byte
-        // has a 4-bit prefix (0000) followed by the index. For index 1, that is just 0x01.
-        header_block.push(0x01);
-        // Now encode the header value "example.com":
-        let authority = b"www.google.com";
-        // First, a length byte (no Huffman; MSB = 0)
-        header_block.push(authority.len() as u8);
-        // Then the raw bytes.
-        header_block.extend_from_slice(authority);
+
+        let mut header_map = HashMap::new();
+        
+        // Extract hostname and path from URL
+        let host = req.host();
+        let path = if let Some(path_idx) = req.url.find('/', 8) { // Find first '/' after "https://"
+            req.url[path_idx..].to_string()
+        } else {
+            "/".to_string()
+        };
+
+        header_map.insert(":method".to_string(), req.method.clone());
+        header_map.insert(":scheme".to_string(), "https".to_string());
+        header_map.insert(":path".to_string(), path);
+        header_map.insert(":authority".to_string(), host);
+        
+        // Add custom headers
+        for (name, value) in &req.headers {
+            header_map.insert(name.clone(), value.clone());
+        }
+
+        let header_block = HPackEncoder::encode(&header_map);
 
         println!(
             "Constructed HPACK header block ({} bytes):",
@@ -279,19 +479,55 @@ impl HttpClient for Http2Client {
         stream.flush().map_err(|e| Error::Other(e.to_string()))?;
 
         // --- Read Response Frames ---
-        // For this simple example, we just loop reading frames and printing them.
-        // We break out when we see END_STREAM on either a HEADERS or DATA frame.
-        println!("Reading response frames (CTRL-C to exit if needed)...");
-        loop {
-            let frame = read_frame(&mut stream).map_err(|e| Error::Other(e.to_string()))?;
+        // Collect all frames until we see END_STREAM on either a HEADERS or DATA frame.
+        println!("Reading response frames...");
+        let mut response_frames = Vec::new();
+        let mut end_stream_seen = false;
+        
+        // Timeout mechanism (simple implementation)
+        let mut frame_count = 0;
+        const MAX_FRAMES = 100; // Safety limit to prevent infinite loop
+        
+        while !end_stream_seen && frame_count < MAX_FRAMES {
+            frame_count += 1;
+            let frame = match read_frame(&mut stream) {
+                Ok(frame) => frame,
+                Err(e) => {
+                    if frame_count > 5 && !response_frames.is_empty() {
+                        // If we've already received some frames, treat errors as end of stream
+                        println!("Read error: {}, but continuing with partial response", e);
+                        break;
+                    } else {
+                        return Err(Error::Other(format!("Failed to read frame: {}", e)));
+                    }
+                }
+            };
+            
             frame.debug_print("  ");
-            // Check for END_STREAM flag (0x1) on HEADERS or DATA frames.
-            if (frame.frame_type == 0x1 || frame.frame_type == 0x0) && (frame.flags & 0x1 != 0) {
-                println!("Received frame with END_STREAM flag. Exiting.");
-                break;
+            response_frames.push(frame.clone());
+            
+            // Check for END_STREAM flag on HEADERS or DATA frames
+            if (frame.frame_type == FRAME_TYPE_HEADERS || frame.frame_type == FRAME_TYPE_DATA) && 
+               (frame.flags & FLAG_END_STREAM != 0) {
+                println!("Received frame with END_STREAM flag. Finished reading response.");
+                end_stream_seen = true;
             }
         }
-
-        Ok(Response::new(200, Vec::new(), Vec::new()))
+        
+        if frame_count >= MAX_FRAMES && !end_stream_seen {
+            println!("Warning: Max frame count reached without END_STREAM");
+            // Still try to process what we have
+        }
+        
+        if response_frames.is_empty() {
+            return Err(Error::InvalidResponse);
+        }
+        
+        // Parse the response frames into a Response object
+        let response = self.parse_response(&response_frames)?;
+        println!("Response status: {}", response.status);
+        println!("Response body length: {} bytes", response.body.len());
+        
+        Ok(response)
     }
 }
